@@ -1,7 +1,12 @@
 
 /* eslint-disable */
+/*
+    Copied from https://github.com/drenther/flashtext.js
+	A JavaScript (Node) fork of the Python Package @ https://github.com/vi3k6i5/flashtext
+	Tried to keep the API as close as possible
+*/
 
-class RadixKeywordProcessor {
+class KeywordProcessor {
 
   constructor(caseSensitive = false) {
     this._keyword = '_keyword_';
@@ -22,6 +27,8 @@ class RadixKeywordProcessor {
       ]);
     })();
 
+    this.keywordTrieDict = [];
+
     this.keywordRadixTree = {};
     this.caseSensitive = caseSensitive;
   }
@@ -32,6 +39,12 @@ class RadixKeywordProcessor {
 
   wrapperString(str) {
     return `_${str}`;
+  }
+
+
+  isWordBoundary(char) {
+    char = char.substring(1);
+    return !this.nonWordBoundaries.has(char);
   }
 
   compareStringFromBegin(str0, str1, length) {
@@ -47,7 +60,7 @@ class RadixKeywordProcessor {
   }
 
   /**
-   * Compare two string to see if they are the same 
+   * Compare two string to see if they are the same
    * or one is another one's prefix
    */
   compareStringPattern(left, right) {
@@ -157,13 +170,173 @@ class RadixKeywordProcessor {
     }
   }
 
-  buildRadixTreeFromStringArray(stringArray) {
+  addKeywordsFromArray(stringArray) {
     stringArray.forEach(str => this.buildRadixTreeFromString(str));
   }
 
+  getWordByKey(currentKey, initialWord, sentence, index) {
+    let step = 0
+    let word = initialWord;
+    while (currentKey.length > word.length) {
+      step++;
+      word += sentence[index + step];
+    }
+    return { step, word };
+  }
 
+  extractKeywords(sentence) {
+    /*
+      Args -
+        sentence (String): Line of text where we will search for keywords
+      Returns -
+        keywordsExtracted (Array(String)): Array of terms/keywords found in the sentence that match our corpus
+    */
+    const keywordsExtracted = [];
+    const sentenceLength = sentence.length;
+
+    if (typeof sentence !== 'string' && sentenceLength === 0)
+      return keywordsExtracted;
+
+    if (!this.caseSensitive) sentence = sentence.toLowerCase();
+
+    let currentDictRef = this.keywordRadixTree;
+    let sequenceStartPos = -1;
+    let sequenceEndPos = 0;
+    let idx = 0;
+
+    while (idx < sentenceLength) {
+      if (sequenceStartPos === -1) {
+        sequenceStartPos = idx;
+      }
+      let char = this.wrapperString(sentence[idx]);
+
+      let longestSequenceFound, isLongerSequenceFound, idy;
+      const keys = Object.keys(currentDictRef);
+
+      let keyMatched = false;
+      for (const currentKey of keys) {
+        if (currentKey != this._keyword) {
+          const {
+            word,
+            step
+          } = this.getWordByKey(currentKey, char, sentence, idx);
+
+          if (this.isWordBoundary(char)) {
+            // word is end or the boundaries is part of the word
+            if (currentDictRef[this._keyword] !== undefined || currentDictRef[word] != undefined) {
+              keyMatched = true;
+              longestSequenceFound = '';
+              isLongerSequenceFound = false;
+
+              if (currentDictRef[this._keyword] !== undefined) {
+                longestSequenceFound = currentDictRef[this._keyword];
+                sequenceEndPos = idx + step;
+              }
+
+              if (currentDictRef[word] != undefined) {
+                let currentDictContinued = currentDictRef[word];
+                idy = idx + step + 1;
+                while (idy < sentenceLength) {
+                  let innerChar = this.wrapperString(sentence[idy]);
+                  const innerKeys = Object.keys(currentDictContinued);
+                  let innerCount = 0;
+                  for (const innerCurrentKey of innerKeys) {
+                    if (
+                      this.isWordBoundary(innerChar) &&
+                      currentDictContinued[this._keyword] !== undefined
+                    ) {
+                      longestSequenceFound = currentDictContinued[this._keyword];
+                      sequenceEndPos = idy;
+                      isLongerSequenceFound = true;
+                    }
+
+                    let innerStep = 0
+                    if (innerCurrentKey != this._keyword) {
+                      const {
+                        word: innerWord,
+                        step: innerStep
+                      } = this.getWordByKey(innerCurrentKey, innerChar, sentence, idy);
+
+                      if (currentDictContinued[innerWord]) {
+                        currentDictContinued = currentDictContinued[innerWord];
+                        idy = idy + innerStep + 1;
+                        break;
+                      }
+                    }
+
+                    innerCount++;
+                  }
+                  if (isLongerSequenceFound || innerCount === innerKeys.length) break;
+                }
+
+                if (
+                  idy >= sentenceLength &&
+                  currentDictContinued[this._keyword] !== undefined
+                ) {
+                  longestSequenceFound = currentDictContinued[this._keyword];
+                  sequenceEndPos = idy;
+                  isLongerSequenceFound = true;
+                }
+
+                if (isLongerSequenceFound) {
+                  idx = sequenceEndPos;
+                }
+              }
+
+              if (longestSequenceFound) {
+                keywordsExtracted.push([sequenceStartPos, idx - 1, longestSequenceFound]);
+
+                currentDictRef = this.keywordRadixTree;
+                sequenceStartPos = -1;
+                break;
+              }
+              currentDictRef = this.keywordRadixTree;
+              sequenceStartPos = -1;
+            }
+          } else if (currentDictRef[word] !== undefined) {
+            currentDictRef = currentDictRef[word];
+            idx += step;
+            keyMatched = true;
+            break;
+          } else if (currentKey == keys[keys.length - 1]) {
+            idy = idx + 1;
+
+            while (idy < sentenceLength) {
+              char = this.wrapperString(sentence[idy]);
+              if (this.isWordBoundary(char)) break;
+              ++idy;
+            }
+
+            idx = idy;
+          }
+        } else {
+          if (keys.length == 1 && this.isWordBoundary(char)) {
+            longestSequenceFound = currentDictRef[this._keyword];
+            if (longestSequenceFound) {
+              keywordsExtracted.push([sequenceStartPos, idx - 1, longestSequenceFound]);
+
+              currentDictRef = this.keywordRadixTree;
+              sequenceStartPos = -1;
+              break;
+            }
+          }
+        }
+      }
+      if (!keyMatched) {
+        currentDictRef = this.keywordRadixTree;
+        sequenceStartPos = -1;
+      }
+      if (idx + 1 >= sentenceLength) {
+        if (currentDictRef[this._keyword] !== undefined) {
+          longestSequenceFound = currentDictRef[this._keyword];
+          keywordsExtracted.push([sequenceStartPos, idx, longestSequenceFound]);
+        }
+      }
+      idx++;
+    }
+    return keywordsExtracted;
+  }
 }
-
 
 const nodes = [
   "bank of america",
